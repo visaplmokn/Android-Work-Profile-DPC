@@ -1,6 +1,5 @@
-package com.example.workprofiledpc
+package com.example.dpc
 
-import android.app.Activity
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
@@ -8,101 +7,98 @@ import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Button
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.LinearLayoutManager
-import com.example.workprofiledpc.databinding.ActivityMainBinding
+import androidx.recyclerview.widget.RecyclerView
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
 
 class MainActivity : AppCompatActivity() {
 
-    private lateinit var binding: ActivityMainBinding
     private lateinit var dpm: DevicePolicyManager
     private lateinit var adminComponent: ComponentName
-    private lateinit var appAdapter: AppAdapter
-    private var isProfileOwner = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        setContentView(R.layout.activity_main)
 
         dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         adminComponent = ComponentName(this, MyDeviceAdminReceiver::class.java)
-        
-        isProfileOwner = dpm.isProfileOwnerApp(packageName)
 
-        updateUiState()
-        setupRecyclerView()
+        val btnCreate: Button = findViewById(R.id.btnCreateProfile)
+        val btnDelete: Button = findViewById(R.id.btnDeleteProfile)
+        val rvApps: RecyclerView = findViewById(R.id.rvInstalledApps)
 
-        binding.btnCreateProfile.setOnClickListener {
-            if (isProfileOwner) {
-                Toast.makeText(this, "Already a Work Profile Owner!", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
+        btnCreate.setOnClickListener {
+            val intent = Intent(DevicePolicyManager.ACTION_PROVISION_MANAGED_PROFILE).apply {
+                putExtra(DevicePolicyManager.EXTRA_PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME, adminComponent)
             }
-            provisionWorkProfile()
+            startActivityForResult(intent, 100)
         }
 
-        binding.btnDeleteProfile.setOnClickListener {
-            if (!isProfileOwner) {
-                Toast.makeText(this, "Must run inside Work Profile!", Toast.LENGTH_LONG).show()
-                return@setOnClickListener
+        btnDelete.setOnClickListener {
+            try {
+                dpm.wipeData(0)
+                Toast.makeText(this, "تم حذف ملف تعريف العمل بنجاح", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "خطأ أثناء الحذف: ${e.message}", Toast.LENGTH_SHORT).show()
             }
-            wipeWorkProfile()
-        }
-    }
-
-    private fun updateUiState() {
-        if (isProfileOwner) {
-            binding.txtStatus.text = "Status: WORK PROFILE ACTIVE (Profile Owner Mode)"
-            binding.txtStatus.setTextColor(getColor(android.R.color.holo_green_dark))
-            binding.btnCreateProfile.isEnabled = false
-            binding.btnDeleteProfile.isEnabled = true
-        } else {
-            binding.txtStatus.text = "Status: PERSONAL PROFILE (DPC Inactive)"
-            binding.txtStatus.setTextColor(getColor(android.R.color.holo_orange_dark))
-            binding.btnCreateProfile.isEnabled = true
-            binding.btnDeleteProfile.isEnabled = false
-        }
-    }
-
-    private fun provisionWorkProfile() {
-        val intent = Intent(DevicePolicyManager.ACTION_PROVISION_MANAGED_PROFILE).apply {
-            putExtra(DevicePolicyManager.EXTRA_PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME, adminComponent)
-            putExtra(DevicePolicyManager.EXTRA_PROVISIONING_SKIP_ENCRYPTION, true)
         }
 
-        if (intent.resolveActivity(packageManager) != null) {
-            startActivityForResult(intent, REQUEST_PROVISION_PROFILE)
-        } else {
-            Toast.makeText(this, "Work Profile Provisioning is unsupported on this device.", Toast.LENGTH_SHORT).show()
-        }
-    }
+        // إعداد قائمة التطبيقات المثبتة في الملف الشخصي لنسخها
+        val pm = packageManager
+        val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            .filter { (it.flags and ApplicationInfo.FLAG_SYSTEM) == 0 } // تطبيقات المستخدم فقط
 
-    private fun wipeWorkProfile() {
-        try {
-            dpm.wipeData(0)
-            Toast.makeText(this, "Deleting Work Profile...", Toast.LENGTH_SHORT).show()
-        } catch (e: SecurityException) {
-            Toast.makeText(this, "Security Exception: ${e.message}", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    private fun setupRecyclerView() {
-        val installedApps = getInstalledAppsList()
-        appAdapter = AppAdapter(installedApps) { appInfo ->
+        rvApps.layoutManager = LinearLayoutManager(this)
+        rvApps.adapter = AppAdapter(installedApps, pm) { appInfo ->
             cloneAppToWorkProfile(appInfo.packageName)
         }
-        binding.recyclerViewApps.layoutManager = LinearLayoutManager(this)
-        binding.recyclerViewApps.adapter = appAdapter
     }
 
-    private fun getInstalledAppsList(): List<ApplicationInfo> {
-        val pm = packageManager
-        return pm.getInstalledApplications(PackageManager.GET_META_DATA).filter { app ->
-            (app.flags and ApplicationInfo.FLAG_SYSTEM) == 0 && app.packageName != packageName
+    private fun cloneAppToWorkProfile(packageName: String) {
+        try {
+            if (dpm.isProfileOwnerApp(packageName)) {
+                Toast.makeText(this, "هذا التطبيق هو مالك الملف بالفعل", Toast.LENGTH_SHORT).show()
+                return
+            }
+            dpm.setApplicationHidden(adminComponent, packageName, false)
+            Toast.makeText(this, "تم تفعيل التطبيق داخل ملف العمل", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "حدث خطأ: تأكد من تفعيل صلاحيات الـ Admin أولاً", Toast.LENGTH_LONG).show()
         }
     }
+}
 
+// الـ Adapter لعرض قائمة التطبيقات
+class AppAdapter(
+    private val apps: List<ApplicationInfo>,
+    private val pm: PackageManager,
+    private val onCloneClick: (ApplicationInfo) -> Unit
+) : RecyclerView.Adapter<AppAdapter.AppViewHolder>() {
+
+    class AppViewHolder(view: View) : RecyclerView.ViewHolder(view) {
+        val appName: TextView = view.findViewById(R.id.tvAppName)
+        val btnClone: Button = view.findViewById(R.id.btnClone)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): AppViewHolder {
+        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_app, parent, false)
+        return AppViewHolder(view)
+    }
+
+    override fun onBindViewHolder(holder: AppViewHolder, position: Int) {
+        val app = apps[position]
+        holder.appName.text = app.loadLabel(pm).toString()
+        holder.btnClone.setOnClickListener { onCloneClick(app) }
+    }
+
+    override fun getItemCount(): Int = apps.size
+}
     private fun cloneAppToWorkProfile(targetPackage: String) {
         if (!isProfileOwner) {
             Toast.makeText(this, "Requires Profile Owner rights! Set using ADB.", Toast.LENGTH_LONG).show()
